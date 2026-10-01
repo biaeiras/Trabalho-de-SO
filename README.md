@@ -1,1 +1,1 @@
-#Simulando o escalonamento preemptivo de processos com chamadas de sistema
+Simulando o escalonamento preemptivo de processos com chamadas de sistema
