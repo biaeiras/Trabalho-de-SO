@@ -52,7 +52,7 @@ void atualizaIO(pid_t pid){
             disparou = 1; 
 
             //Remove a operação já concluida
-            for(int j = 1; j < quantidadeIO -1; j++){
+            for(int j = i; j < quantidadeIO -1; j++){
                 filaIO[j] = filaIO[j+1]; 
             }
             quantidadeIO--; 
@@ -67,6 +67,11 @@ void atualizaIO(pid_t pid){
 
 int main(int argc, char *argv[]){
 
+    if(argc != 2){
+        printf("Uso: % PID_kernelSim\n", argv[0]); 
+        return 1
+    }
+
     pid_t pid = (pid_t) atoi(argv[1]);
 
     signal(SIGUSR1, pedidoIO);
@@ -74,7 +79,7 @@ int main(int argc, char *argv[]){
     while(1){
 
         unsigned int falta = 1; 
-        if (falta > 0){
+        while (falta > 0){
             falta = sleep(falta); 
         }
 
