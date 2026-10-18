@@ -74,7 +74,7 @@ int main(int argc, char *argv[]){
 
     pid_t pid = (pid_t) atoi(argv[1]);
 
-    signal(SIGUSR1, pedidoIO);
+    signal(SIGNAL_PEDIDO_IO, pedidoIO);
 
     while(1){
 
