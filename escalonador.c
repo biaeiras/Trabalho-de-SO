@@ -15,6 +15,23 @@
 #define BLOQUEADO 2
 #define TERMINADO 3
 
+volatile sig_atomic_t irq0_recebida = 0;    
+// Variavel usada para indicar que uma IRQ0 foi recebida
+// volatile indica que seu valor pode mudar fora do fluxo normal do programa
+// sig_atomic_t permite ler e alterar esse valor de forma atômica
+// no contexto do tratador de sinal
+
+void tratarIRQ0(int sinal) {
+    irq0_recebida = 1;
+}
+
+void esperarIRQ0(void) {
+    while (!irq0_recebida)
+        pause();
+    
+    irq0_recebida = 0;
+}
+
 // Struct que guarda as informacoes de cada processo criado (A1, A2 e A3)
 typedef struct processo {
     pid_t pid;              // PID do processo
@@ -32,6 +49,32 @@ int main(void) {
         {-1, "A2", "./A2", -1},
         {-1, "A3", "./A3", -1}
     };
+
+    // Iniciar interControllerSim (interController.c):
+    pid_t pidKernel = getpid();   // guarda o pid do processo pai (KernelSim)
+
+    signal(SIGUSR1, tratarIRQ0);    // trata o recebimento do sinal SIGUSR1(IRQ0)
+
+    // Transforma o pid em string para ser passado como argumento:
+    char pidKernelStr[20];
+    snprintf(pidKernelStr, sizeof(pidKernelStr), "%d", (int) pidKernel);
+    
+    pid_t pidControlador = fork();
+
+    if (pidControlador < 0) {
+        perror("Erro ao criar o processo de InterControllerSim");
+        return EXIT_FAILURE;        // encerra a funcao main
+    }
+
+    if (pidControlador == 0) {
+        char *argvControlador[] = {"./interController", pidKernelStr, NULL};
+
+        if (execvp(argvControlador[0], argvControlador) == -1) {
+            perror("Erro ao executar programa");
+            exit(EXIT_FAILURE);
+        }
+    }
+
 
     // Criar os processos
     for (int i = 0; i < QT_PROCESSOS; i++) {
@@ -93,7 +136,7 @@ int main(void) {
             return EXIT_FAILURE;
         }
 
-        sleep(1);    // time slice (temporario, vai depender dos sinais recebidos de InterControllerSim)
+        esperarIRQ0();
 
         // Tenta interromper o processo ao fim da fatia de tempo.
         if (kill(processos[i].pid, SIGSTOP) == -1 && errno != ESRCH) {     

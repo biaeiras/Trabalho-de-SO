@@ -68,8 +68,8 @@ void atualizaIO(pid_t pid){
 int main(int argc, char *argv[]){
 
     if(argc != 2){
-        printf("Uso: % PID_kernelSim\n", argv[0]); 
-        return 1
+        printf("Uso: %s PID_kernelSim\n", argv[0]); 
+        return 1;
     }
 
     pid_t pid = (pid_t) atoi(argv[1]);
