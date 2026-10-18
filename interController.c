@@ -5,7 +5,7 @@
 #include <unistd.h>
 
 #define IO_SEC 3 
-#define SIGNAL_PEDIDO_IO SIGUSR1
+#define SIGNAL_PEDIDO_IO SIGTERM
 #define MAX_PEDIDOS 100
 
 int filaIO[MAX_PEDIDOS]; 
