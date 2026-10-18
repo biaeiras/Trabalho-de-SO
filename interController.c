@@ -1,13 +1,15 @@
 #include <stdio.h> 
 #include <signal.h> 
 #include <stdlib.h> 
+#include <sys/types.h>
+#include <unistd.h>
 
 #define IO_SEC 3 
 #define SIGNAL_PEDIDO_IO SIGUSR1
 #define MAX_PEDIDOS 100
 
 int filaIO[MAX_PEDIDOS]; 
-int qtdIO = 0; 
+int quantidadeIO = 0; 
 int pedidos_recebidos = 0; 
 
 //Recebe o aviso de pedido de Entrada e Saída vindo do KernelSim(escalonador.c) 
@@ -30,7 +32,7 @@ void adicionarPedidoIO(void){
         filaIO[quantidadeIO] = IO_SEC; //guarda os segundos de deve ficar na fila de bloqueados
         quantidadeIO++; 
     }else{
-        printf("Fila de Pedidos cheia")
+        printf("Fila de Pedidos cheia");
     }
 }
 // decrementa o tempo de cada E/S
@@ -67,7 +69,7 @@ int main(int argc, char *argv[]){
 
     pid_t pid = (pid_t) atoi(argv[1]);
 
-    signal(SIGUSR1, pedido);
+    signal(SIGUSR1, pedidoIO);
 
     while(1){
 
