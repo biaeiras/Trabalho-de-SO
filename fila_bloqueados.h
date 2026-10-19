@@ -6,5 +6,6 @@
 
 int enfileirarBloq(int processo);
 int desenfileirarBloq(void);
+void imprimirFilaBloq(void);
 
 #endif

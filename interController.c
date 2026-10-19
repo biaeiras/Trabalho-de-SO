@@ -10,7 +10,7 @@
 
 int filaIO[MAX_PEDIDOS]; 
 int quantidadeIO = 0; 
-int pedidos_recebidos = 0; 
+volatile sig_atomic_t pedidos_recebidos = 0; 
 
 //Recebe o aviso de pedido de Entrada e Saída vindo do KernelSim(escalonador.c) 
 static void pedidoIO(int sig){

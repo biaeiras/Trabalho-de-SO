@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include "fila.h"
+#include "fila_bloqueados.h"
 #include "common.h"
 
 // Estados do processo:
@@ -17,8 +18,18 @@
 #define BLOQUEADO 2
 #define TERMINADO 3
 
-volatile sig_atomic_t irq0_recebida = 0;    
-// Variavel usada para indicar que uma IRQ0 foi recebida
+// Sinal que o KernelSim manda ao InterControllerSim avisando que houve um pedido de I/O
+#define SIGNAL_PEDIDO_IO SIGTERM
+
+// Variavel usada para indicar que uma IRQ0 foi recebida:
+volatile sig_atomic_t irq0_recebida = 0;       // fim da fatia de tempo
+
+// Variavel usada para indicar que uma IRQ0 foi recebida:
+volatile sig_atomic_t irq1_recebida = 0;       // fim de uma operacao de I/O
+
+// Variavel usada para indicar que uma syscall foi recebida:
+volatile sig_atomic_t syscall_recebida = 0;    // algum processo pediu I/O 
+
 // volatile indica que seu valor pode mudar fora do fluxo normal do programa
 // sig_atomic_t permite ler e alterar esse valor de forma atômica
 // no contexto do tratador de sinal
@@ -27,20 +38,63 @@ void tratarIRQ0(int sinal) {
     irq0_recebida = 1;
 }
 
-void esperarIRQ0(void) {
-    while (!irq0_recebida)
-        pause();
-    
-    irq0_recebida = 0;
+void tratarIRQ1(int sinal) {
+    irq1_recebida = 1;
 }
-
-// Variavel usada para indicar que uma syscall foi recebida
-volatile sig_atomic_t syscall_recebida = 0;
 
 void tratarSyscall(int sinal) {
     syscall_recebida = 1;
 }
 
+// Dorme ate chegar qualquer um dos tres sinais (IRQ0, IRQ1 ou syscall)
+void esperarEvento(void) {
+    while (!irq0_recebida && !irq1_recebida && !syscall_recebida)
+        pause();
+}
+
+// Struct que guarda as informacoes de cada processo criado (A1, A2 e A3)
+// Aqui tambem fica o "contexto" do processo: o PC e o pedido de syscall
+typedef struct processo {
+    pid_t pid;              // PID do processo
+    char nome[10];          // Nome da aplicacao (apenas para identificacao)
+    char executavel[20];    // Nome do executavel da aplicacao
+    int estado;
+    int pc;                 // Contexto: ultimo PC informado pelo processo
+    char op;                // Contexto: operacao da syscall ('R' ou 'W'), 0 se nao tiver
+    int pedindoIO;          // 1 se o processo acabou de pedir I/O e ainda nao foi bloqueado
+} Processo;
+
+Processo processos[QT_PROCESSOS] = {
+    {-1, "A1", "./A1", NAO_CRIADO, 0, 0, 0},
+    {-1, "A2", "./A2", NAO_CRIADO, 0, 0, 0},
+    {-1, "A3", "./A3", NAO_CRIADO, 0, 0, 0}
+};
+
+// Transforma o estado (representado como int) em string  
+const char *nomeEstado(int estado) {
+    switch (estado) {
+        case PRONTO:      return "pronto";
+        case EXECUTANDO:  return "executando";
+        case BLOQUEADO:   return "bloqueado";
+        case TERMINADO:   return "terminado";
+        default:          return "nao criado";
+    }
+}
+
+// Mostra a situacao do sistema (filas e PC de cada processo)
+void mostrarEstado(void) {
+    printf("    >> Fila de prontos: [ ");
+    imprimirFila();
+    printf("] | Fila de bloqueados (E/S): [ ");
+    imprimirFilaBloq();
+    printf("]\n    >> ");
+    for (int i = 0; i < QT_PROCESSOS; i++)
+        printf("%s: PC=%d (%s)   ", processos[i].nome, processos[i].pc, nomeEstado(processos[i].estado));
+    printf("\n");
+}
+
+
+// Le as mensagens do pipe e guarda no contexto de cada processo
 void lerMensagens(int fd) {
     Msg m;      // variavel para armazenar uma Msg
     ssize_t bytesLidos;     // armazena a quantidade de bytes
@@ -49,6 +103,13 @@ void lerMensagens(int fd) {
         if (bytesLidos == sizeof(Msg)) {
             printf("KernelSim: mensagem recebida - processo A%d, PC = %d, operacao = %c\n", 
             m.idx + 1, m.pc, m.op == 0 ? '-' : m.op);       // mostra "-" quando nao tiver operacao de I/O
+                
+             // Salva o contexto do processo
+            processos[m.idx].pc = m.pc;
+            if (m.op != 0) {
+                processos[m.idx].op = m.op;
+                processos[m.idx].pedindoIO = 1;
+            }
         }
     }
 
@@ -56,23 +117,8 @@ void lerMensagens(int fd) {
         perror("Erro ao ler o pipe");
 }
 
-// Struct que guarda as informacoes de cada processo criado (A1, A2 e A3)
-typedef struct processo {
-    pid_t pid;              // PID do processo
-    char nome[10];          // Nome da aplicacao (apenas para identificacao)
-    char executavel[20];    // Nome do executavel da aplicacao
-    int estado;
-} Processo;
 
 int main(void) {
-
-    // Inicializando structs para os processos (pid = -1 porque o processo ainda nao foi criado)
-    // e guardado em um vetor:
-    Processo processos[QT_PROCESSOS] = {
-        {-1, "A1", "./A1", -1},
-        {-1, "A2", "./A2", -1},
-        {-1, "A3", "./A3", -1}
-    };
 
     // Criar o pipe para comunicacao entre os processos e KernelSim, com ifnormacoes sobre PC e pedidos de I/O:
     int pipefd[2];
@@ -95,8 +141,9 @@ int main(void) {
     // Iniciar interControllerSim (interController.c):
     pid_t pidKernel = getpid();   // guarda o pid do processo pai (KernelSim)
 
-    signal(SIGUSR1, tratarIRQ0);        // trata o recebimento do sinal SIGUSR1(IRQ0)
-    signal(SIGALRM, tratarSyscall);     // trata o recebimento do sinal SIG_SYSCALL(SIGALRM)
+    signal(SIGUSR1, tratarIRQ0);       // trata o recebimento do sinal SIGUSR1(IRQ0)
+    signal(SIGUSR2, tratarIRQ1);       // trata o recebimento do sinal SIGUSR2(IRQ1)
+    signal(SIGALRM, tratarSyscall);    // trata o recebimento do sinal SIG_SYSCALL(SIGALRM)
 
 
     // Transforma o pid em string para ser passado como argumento:
@@ -141,8 +188,7 @@ int main(void) {
             char idxStr[16];
             char fdStr[16];
 
-            // Converte o índice do processo e o descritor do pipe
-            // para strings, pois o execvp recebe argumentos textuais
+            // Converte o índice do processo e o descritor do pipe para strings
             snprintf(idxStr, sizeof(idxStr), "%d", i);
             snprintf(fdStr, sizeof(fdStr), "%d", pipefd[1]);
 
@@ -181,73 +227,131 @@ int main(void) {
     // Como ele não envia mensagens pelo pipe, fecha a ponta de escrita depois de criar todos os processos filhos
     close(pipefd[1]);
     int ativos = QT_PROCESSOS;  // quantidade de processos que ainda nao terminaram
+    int executando = -1;        // indice do processo que esta executando no momento (-1 = nenhum)
+
+    printf("\n ----- KernelSim: inicio do escalonamento ----- \n");
+    mostrarEstado();
 
     while (ativos > 0) {
-        int i = desenfileirar();    // pega o proximo processo na fila de prontos
+        // Se a CPU esta livre, executa o proximo processo pronto
+        if (executando == -1) {
+            int i = desenfileirar();    // pega o proximo processo na fila de prontos
+            if (i != -1) {
+                printf("KernelSim: executando %s\n", processos[i].nome);
+                processos[i].estado = EXECUTANDO;
+                executando = i;
 
-        if (i == -1) {
-            fprintf(stderr, "Erro: fila de prontos vazia.\n");
-            return EXIT_FAILURE;
+                if (kill(processos[i].pid, SIGCONT) == -1) {        // comeca a executar o processo que foi desenfileirado
+                    perror("Erro ao continuar processo");
+                    return EXIT_FAILURE;
+                }
+            }
+            // Se i == -1 todos estao bloqueados esperando I/O: so espera o proximo IRQ1
         }
 
-        printf("KernelSim: executando %s\n", processos[i].nome);
-        processos[i].estado = EXECUTANDO;
+        // Espera acontecer algum evento (IRQ0, IRQ1 ou syscall)
+        esperarEvento();
 
-        if (kill(processos[i].pid, SIGCONT) == -1) {        // comeca a executar o processo que foi desenfileirado
-            perror("Erro ao continuar processo");
-            return EXIT_FAILURE;
-        }
+        // Anota quais eventos aconteceram e limpa os avisos
+        int irq0 = irq0_recebida;
+        int irq1 = irq1_recebida;
+        irq0_recebida = 0;
+        irq1_recebida = 0;
+        syscall_recebida = 0;
 
-        esperarIRQ0();
-
-        // Tenta interromper o processo ao fim da fatia de tempo.
-        if (kill(processos[i].pid, SIGSTOP) == -1 && errno != ESRCH) {     
-
-            // ESRCH indica que o processo nao existe mais
-            // Pode acontecer se ele terminou antes de receber o SIGSTOP
-
-            perror("Erro ao interromper processo");
-            return EXIT_FAILURE;
-        }
-
-        int status;
-        pid_t resultado = waitpid(processos[i].pid, &status, WUNTRACED);    
-        // WUNTRACED permite distinguir um processo que foi interrompido de um que terminou
-
-        if (resultado == -1) {
-            perror("Erro ao esperar pelo processo");
-            return EXIT_FAILURE;
-        }
-
-        // Lê todas as mensagens disponíveis no pipe, sem bloquear.
+        // Le as mensagens do pipe (atualiza PC e pedidos de syscall)
         lerMensagens(pipefd[0]);
 
-        if (WIFSTOPPED(status)) {
-            // confere se o processo esta pausado para deixar seu estado como pronto
-            processos[i].estado = PRONTO;
+        // Se IRQ1 foi recebido terminou um I/O, entao tira o primeiro da fila de bloqueados
+        // Isso vem ANTES do tratamento do IRQ0, pois quem terminou I/O
+        // entra na fila de prontos antes de quem terminou o time slice.
+        if (irq1) {     // Verifica se houve um IRQ1
+            int b = desenfileirarBloq();
 
-            if (enfileirar(i) == -1) {      // tenta enfileirar o processo na fila de prontos
-                fprintf(stderr, "Erro: fila de prontos cheia.\n");
-                return EXIT_FAILURE;
+            if (b != -1) {
+                processos[b].estado = PRONTO;       // processo desbloqueado, volta a ser pronto
+                processos[b].op = 0;    // syscall concluida
+                if (enfileirar(b) == -1) {
+                    fprintf(stderr, "Erro: fila de prontos cheia.\n");
+                    return EXIT_FAILURE;
+                }
+                printf("KernelSim: IRQ1 - %s terminou o I/O e foi para a fila de prontos\n", processos[b].nome);
             }
-
-            printf("KernelSim: %s parou de executar e voltou para a fila\n", processos[i].nome);
         }
 
-        else if (WIFEXITED(status) || WIFSIGNALED(status)) {
-            // verifica se o processo terminou (ou normalmente ou por algum sinal)
-            processos[i].estado = TERMINADO;
-            ativos--;   // atualiza a quantidade de processos ativos (nao terminados)
+        // Trata o precesso que esta executando, se tiver
 
-            printf("KernelSim: %s terminou. Restam %d processo(s).\n",
-                processos[i].nome, ativos);
+        if (executando != -1) {
+            int i = executando;
+
+            // Se acabou o time slice (IRQ0) ou se pediu I/O (syscall), o processo para de executar
+            if (irq0 || processos[i].pedindoIO) {
+
+                if (kill(processos[i].pid, SIGSTOP) == -1 && errno != ESRCH) {     
+
+                    // ESRCH indica que o processo nao existe mais
+                    // Pode acontecer se ele terminou antes de receber o SIGSTOP
+
+                    perror("Erro ao interromper processo");
+                    return EXIT_FAILURE;
+                }
+                
+                int status;
+                pid_t resultado = waitpid(processos[i].pid, &status, WUNTRACED);    
+                // WUNTRACED permite distinguir um processo que foi interrompido de um que terminou
+
+                if (resultado == -1) {
+                    perror("Erro ao esperar pelo processo");
+                    return EXIT_FAILURE;
+                }
+
+                // Pode ter chegado mensagem entre a leitura anterior e o SIGSTOP
+                lerMensagens(pipefd[0]);
+                if (WIFEXITED(status) || WIFSIGNALED(status)) {
+                    // o processo terminou (ou normalmente ou por algum sinal)
+                    processos[i].estado = TERMINADO;
+                    ativos--;   // atualiza a quantidade de processos ativos (nao terminados)
+
+                    printf("KernelSim: %s terminou. Restam %d processo(s).\n",
+                        processos[i].nome, ativos);
+                }
+
+                else if (processos[i].pedindoIO) {
+                    // Se tem pedido de IO, o processo vai para a fila de bloqueados
+                    processos[i].estado = BLOQUEADO;
+                    processos[i].pedindoIO = 0;
+                    if (enfileirarBloq(i) == -1) {
+                        fprintf(stderr, "Erro: fila de bloqueados cheia.\n");
+                        return EXIT_FAILURE;
+                    }
+
+                    // avisa o InterControllerSim que ha um novo pedido de I/O
+                    kill(pidControlador, SIGNAL_PEDIDO_IO);
+
+                    printf("KernelSim: %s fez syscall(D1, %c) e foi bloqueado\n", processos[i].nome, processos[i].op);
+                }
+
+                else {
+                    // acabou o time slice: volta para a fila de prontos
+                    processos[i].estado = PRONTO;
+
+                    if (enfileirar(i) == -1) {
+                        fprintf(stderr, "Erro: fila de prontos cheia.\n");
+                        return EXIT_FAILURE;
+                    }
+
+                    printf("KernelSim: IRQ0 - %s parou de executar e voltou para a fila\n", processos[i].nome);
+                }
+                executando = -1;    // CPU livre
+            }
         }
+        if (irq0 || irq1)
+            mostrarEstado();
     }
 
-    for (int i = 0; i < QT_PROCESSOS; i++) {
-        kill(processos[i].pid, SIGCONT);
-        waitpid(processos[i].pid, NULL, 0);
-    }
+    // Todos terminaram: encerra o InterControllerSim (que e um processo infinito)
+    kill(pidControlador, SIGKILL);
+    waitpid(pidControlador, NULL, 0);
 
     printf("KernelSim: todos os processos terminaram.\n");
 

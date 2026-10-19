@@ -6,5 +6,6 @@
 
 int enfileirar(int processo);
 int desenfileirar(void);
+void imprimirFila(void);
 
 #endif

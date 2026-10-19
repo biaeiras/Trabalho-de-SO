@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "fila.h"
 
 //  Modulo com as funcoes e variaveis especificas para a fila de prontos
@@ -26,4 +27,10 @@ int desenfileirar(void) {
     inicio = (inicio + 1) % QT_PROCESSOS;
     quantidadeProntos--;
     return processo;
+}
+
+// Mostra o conteudo da fila (apenas para acompanhar a execucao)
+void imprimirFila(void) {
+    for (int k = 0; k < quantidadeProntos; k++)
+        printf("A%d ", filaProntos[(inicio + k) % QT_PROCESSOS] + 1);
 }
